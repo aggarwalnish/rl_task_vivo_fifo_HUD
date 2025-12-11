@@ -1,0 +1,36 @@
+Please implement the VIVO FIFO in rtl/vivo_fifo.sv.
+
+All behavior is defined in docs/Specifications.md. Your RTL must follow every rule in that document with no missing cases or added assumptions.
+
+The module name must be "vivo_fifo". It has these parameters:
+
+    ELEM_WIDTH      : bit width per element
+    IN_ELEMS_MAX    : max elements accepted in one push
+    OUT_ELEMS_MAX   : max elements returned in one pop
+    DEPTH_ELEMS     : total FIFO capacity in elements
+
+Clock: posedge clk  
+Reset: rst_n (active low, async, must fully reset state)
+
+Input (push) interface:
+    - in_valid / in_ready handshake
+    - in_data packed, oldest element in the lowest index
+    - in_num_elems gives number of elements this push (0 to IN_ELEMS_MAX)
+    - push happens only if in_valid && in_ready
+    - if not enough space, in_ready must be low and nothing is stored
+
+Output (pop) interface:
+    - out_valid / out_ready handshake
+    - out_req_elems requests elements to pop (0 to OUT_ELEMS_MAX)
+    - pop happens only if out_valid && out_ready
+    - if fewer elements than requested are stored, out_valid must be low
+    - out_data must output oldest elements first into [0]
+    - out_num_elems must equal out_req_elems on a successful pop
+
+Push and pop may both occur in the same cycle, and ordering must always be correct.
+
+Internal logic must wrap pointers modulo DEPTH_ELEMS. No elements may be dropped, duplicated, or reordered.
+
+Only synthesizable SystemVerilog is allowed. Do not use behavioral queues, dynamic arrays, DPI, classes, or anything that infers latches.
+
+You may only edit rtl/vivo_fifo.sv.
