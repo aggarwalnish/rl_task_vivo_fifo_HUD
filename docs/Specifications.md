@@ -20,16 +20,62 @@ Behavior is **deterministic, synthesizable, and race-free**.
 
 ## **2. Parameters**
 
+### **2.1 Top-Level VIVO FIFO (`vivo_fifo`)**
+
 | Name            | Type         | Default | Description                                |
 | --------------- | ------------ | ------- | ------------------------------------------ |
 | `ELEM_WIDTH`    | int unsigned | 8       | Width of one element (bits)                |
 | `IN_ELEMS_MAX`  | int unsigned | 4       | Max elements accepted per input transfer   |
 | `OUT_ELEMS_MAX` | int unsigned | 4       | Max elements delivered per output transfer |
-| `DEPTH_ELEMS`   | int unsigned | 128     | Maximum elements FIFO can store            |
+| `DEPTH`         | int unsigned | 128     | Maximum elements FIFO can store            |
+
+For implementation convenience, many designs define:
+
+```systemverilog
+localparam int BANKS      = (IN_ELEMS_MAX >= OUT_ELEMS_MAX)
+                            ? IN_ELEMS_MAX : OUT_ELEMS_MAX;
+localparam int CAPACITY   = DEPTH;                    // total element capacity
+localparam int BANK_DEPTH = (CAPACITY + BANKS - 1)
+                            / BANKS;                  // entries per bank
+```
+
+The **architectural behavior** is always defined in terms of `DEPTH`
+and `CAPACITY` (total elements), not how storage is physically organized.
+
+### **2.2 Helper Synchronous FIFO (`sync_fifo`)**
+
+The top-level implementation is expected to use a reusable synchronous FIFO
+building block with this interface:
+
+```systemverilog
+module sync_fifo #(
+    parameter int WIDTH = ELEM_WIDTH,
+    parameter int DEPTH = BANK_DEPTH // entries per bank (chosen by top-level)
+)(
+    input  logic             clk,
+    input  logic             rst_n,   // async active-low
+    input  logic             wr_en,
+    input  logic [WIDTH-1:0] wr_data,
+    input  logic             rd_en,
+    output logic [WIDTH-1:0] rd_data,
+    output logic             empty,
+    output logic             full
+);
+```
+
+Requirements for `sync_fifo`:
+
+- Single clock (`clk`), async active-low reset (`rst_n`).
+- Strict FIFO ordering for `wr_data` elements.
+- No internal overflow/underflow when driven correctly.
+- Fully synthesizable (no dynamic constructs, latches, or DPI).
+
+The exact internal structure (pointers, counters, RAM style) is up to you,
+as long as it behaves as a conventional single-clock FIFO.
 
 ---
 
-## **3. Interface Specification**
+## **3. Top-Level Interface Specification**
 
 All signals synchronous to `clk`. Reset is asynchronous active-low.
 
@@ -117,7 +163,7 @@ N = occ = occupancy
 Always:
 
 ```
-0 <= occ <= DEPTH_ELEMS
+0 <= occ <= DEPTH
 ```
 
 ---
@@ -128,34 +174,34 @@ Always:
 
 Define:
 
-```
-push_req   = (in_valid == 1)
-push_elems = in_num_elems
-space      = DEPTH_ELEMS - occ
+```systemverilog
+push_req   = (in_valid == 1);
+push_elems = in_num_elems;
+space      = DEPTH - occ;
 ```
 
 **Conservative backpressure**:
 
-```
-if space >= push_elems:
-    in_ready = 1
-else:
-    in_ready = 0
+```systemverilog
+if (space >= push_elems)
+    in_ready = 1;
+else
+    in_ready = 0;
 ```
 
 Push occurs on rising edge if:
 
-```
-push_fire = in_valid && in_ready
-```
-
-On push:
-
-```
-occ_next = occ + push_elems
+```systemverilog
+push_fire = in_valid && in_ready;
 ```
 
-New elements always appended **after all existing elements**.
+On a successful push:
+
+```systemverilog
+occ_next = occ + push_elems;
+```
+
+New elements are always appended **after all existing elements**.
 
 > Push **cannot** rely on pop to create space in same cycle.
 
@@ -165,8 +211,8 @@ New elements always appended **after all existing elements**.
 
 Define:
 
-```
-pop_req_elems = out_req_elems
+```systemverilog
+pop_req_elems = out_req_elems;
 ```
 
 Conditions:
@@ -178,14 +224,14 @@ Conditions:
 
 Pop occurs on rising edge if:
 
-```
-pop_fire = out_valid && out_ready
+```systemverilog
+pop_fire = out_valid && out_ready;
 ```
 
-On pop:
+On a successful pop:
 
-```
-occ_next = occ - out_num_elems
+```systemverilog
+occ_next = occ - out_num_elems;
 ```
 
 > FIFO never asserts `out_valid` unless it can produce **exact** number of requested elements.
@@ -207,6 +253,39 @@ Ordering guarantee:
 * Newly pushed elements **cannot** be popped out same cycle
 
 > First dequeue the oldest, then enqueue new ones.
+
+---
+
+## **8. Suggested Internal Architecture (Striped Banks)**
+
+The external behavior above does **not** require a particular memory layout,
+but a convenient implementation pattern is:
+
+- Define `BANKS = max(IN_ELEMS_MAX, OUT_ELEMS_MAX)`.
+- Implement `BANKS` instances of `sync_fifo`, each with depth `DEPTH` and
+  width `ELEM_WIDTH` (one element per entry).
+- Maintain global state in `vivo_fifo`:
+  - `occ` = total element count across all banks (Section 4).
+  - `rd_bank` = bank index holding the globally oldest element.
+  - `wr_bank` = bank index where the next pushed element will be placed.
+- When pushing `in_num_elems` elements:
+  - Route input lane `j` to bank `(wr_bank + j) % BANKS`.
+  - After a successful push, advance `wr_bank` by `in_num_elems` modulo `BANKS`
+    and increase `occ` by `in_num_elems`.
+- When popping `out_req_elems` elements:
+  - Present output lane `i` from bank `(rd_bank + i) % BANKS`.
+  - Only assert `out_valid` when `occ >= out_req_elems` (as in Section 5.2).
+  - On a successful pop, advance `rd_bank` by `out_req_elems` modulo `BANKS`
+    and decrease `occ` by `out_req_elems`.
+
+This “striped” layout guarantees:
+
+- Each bank sees at most one read and one write per cycle.
+- Global ordering remains strict FIFO at element granularity.
+- The total capacity in elements equals the top-level `DEPTH` parameter.
+
+You are free to implement an equivalent architecture as long as
+all externally observable semantics from Sections 3–6 are met.
 
 ---
 

@@ -25,7 +25,7 @@ module vivo_fifo #(
     input  logic [$clog2(OUT_ELEMS_MAX+1)-1:0]       out_req_elems  // Num requested by consumer
 );
 
-    // TODO: Implement FIFO internal memory structure
+    // TODO: Implement FIFO internal memory structure (sync fifo)
 
     // TODO: Define the safe defaults for the outputs
 
