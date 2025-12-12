@@ -2,9 +2,6 @@
 // VIVO FIFO (Variable Input / Variable Output FIFO)
 // Golden implementation (striped multi-FIFO architecture)
 //------------------------------------------------------------------------------
-
-`include "sync_fifo.sv"
-
 module vivo_fifo #(
     parameter int ELEM_WIDTH     = 8,
     // DEPTH is total element capacity (max elements stored).
