@@ -64,7 +64,8 @@ async def test_simple_push_pop(dut):
     IN_ELEMS_MAX = int(dut.IN_ELEMS_MAX.value)
     OUT_ELEMS_MAX = int(dut.OUT_ELEMS_MAX.value)
     DEPTH = int(dut.DEPTH.value)
-    CAPACITY = DEPTH * max(IN_ELEMS_MAX, OUT_ELEMS_MAX)
+    # DEPTH is total element capacity (see docs/Specifications.md).
+    CAPACITY = DEPTH
 
     # Python model of FIFO contents
     model = []
@@ -168,7 +169,8 @@ async def test_backpressure_and_edge_cases(dut):
     IN_ELEMS_MAX = int(dut.IN_ELEMS_MAX.value)
     OUT_ELEMS_MAX = int(dut.OUT_ELEMS_MAX.value)
     DEPTH = int(dut.DEPTH.value)
-    CAPACITY = DEPTH * max(IN_ELEMS_MAX, OUT_ELEMS_MAX)
+    # DEPTH is total element capacity (see docs/Specifications.md).
+    CAPACITY = DEPTH
 
     model = []
 
@@ -267,7 +269,8 @@ async def test_random_stress_with_scoreboard(dut):
     IN_ELEMS_MAX = int(dut.IN_ELEMS_MAX.value)
     OUT_ELEMS_MAX = int(dut.OUT_ELEMS_MAX.value)
     DEPTH = int(dut.DEPTH.value)
-    CAPACITY = DEPTH * max(IN_ELEMS_MAX, OUT_ELEMS_MAX)
+    # DEPTH is total element capacity (see docs/Specifications.md).
+    CAPACITY = DEPTH
 
     random.seed(42)
 
@@ -367,7 +370,10 @@ def test_vivo_fifo_hidden_runner():
     sim = os.getenv("SIM", "icarus")
 
     proj_path = Path(__file__).resolve().parent.parent
-    sources = [proj_path / "rtl/vivo_fifo.sv"]
+    sources = [
+        proj_path / "sources/vivo_fifo.sv",
+        proj_path / "sources/sync_fifo.sv",
+    ]
 
     runner = get_runner(sim)
     runner.build(
