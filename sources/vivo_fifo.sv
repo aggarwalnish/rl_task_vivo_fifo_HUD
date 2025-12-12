@@ -123,30 +123,41 @@ module vivo_fifo #(
     // Pointer and count updates
     //--------------------------------------------------------------------------
 
-    always_comb begin
-        d_ptr = q_ptr;
+    // Intermediate signals for struct fields (Icarus compatibility)
+    logic [COUNT_W-1:0] d_ptr_count;
+    logic [BANK_W-1:0]  d_ptr_rd_bank;
+    logic [BANK_W-1:0]  d_ptr_wr_bank;
 
-        d_ptr.count = q_ptr.count
+    always_comb begin
+        // Compute count
+        d_ptr_count = q_ptr.count
                       + (do_push ? in_num_elems : '0)
                       - (do_pop  ? out_req_elems : '0);
 
         // rd_bank update (modulo BANKS)
         if (do_pop) begin
             if (BANKS > 1) begin
-                d_ptr.rd_bank = (q_ptr.rd_bank + out_req_elems) % BANKS;
+                d_ptr_rd_bank = (q_ptr.rd_bank + out_req_elems) % BANKS;
             end else begin
-                d_ptr.rd_bank = '0;
+                d_ptr_rd_bank = '0;
             end
+        end else begin
+            d_ptr_rd_bank = q_ptr.rd_bank;
         end
 
         // wr_bank update (modulo BANKS)
         if (do_push) begin
             if (BANKS > 1) begin
-                d_ptr.wr_bank = (q_ptr.wr_bank + in_num_elems) % BANKS;
+                d_ptr_wr_bank = (q_ptr.wr_bank + in_num_elems) % BANKS;
             end else begin
-                d_ptr.wr_bank = '0;
+                d_ptr_wr_bank = '0;
             end
+        end else begin
+            d_ptr_wr_bank = q_ptr.wr_bank;
         end
+
+        // Construct struct in one assignment (Icarus compatible)
+        d_ptr = '{count: d_ptr_count, rd_bank: d_ptr_rd_bank, wr_bank: d_ptr_wr_bank};
     end
 
     always_ff @(posedge clk or negedge rst_n) begin
@@ -161,19 +172,37 @@ module vivo_fifo #(
     // Write distribution into per-bank FIFOs
     //--------------------------------------------------------------------------
 
+    // Intermediate signals for write distribution (Icarus compatibility)
+    logic [BANKS-1:0]                     fifo_wr_en_int [0:IN_ELEMS_MAX-1];
+    logic [BANKS-1:0][ELEM_WIDTH-1:0]     fifo_wr_data_int [0:IN_ELEMS_MAX-1];
+
+    genvar j;
+    generate
+        for (j = 0; j < IN_ELEMS_MAX; j++) begin : gen_wr_dist
+            always_comb begin
+                fifo_wr_en_int[j]   = '0;
+                fifo_wr_data_int[j] = '0;
+                if (do_push && (j < in_num_elems)) begin
+                    logic [BANK_W-1:0] bank_idx;
+                    if (BANKS > 1) begin
+                        bank_idx = (q_ptr.wr_bank + BANK_W'(j)) % BANKS;
+                    end else begin
+                        bank_idx = '0;
+                    end
+                    fifo_wr_en_int[j][bank_idx]   = 1'b1;
+                    fifo_wr_data_int[j][bank_idx] = in_data[j];
+                end
+            end
+        end
+    endgenerate
+
+    // Combine write enables and data from all elements
     always_comb begin
         fifo_wr_en   = '0;
         fifo_wr_data = '0;
-
-        if (do_push) begin
-            for (int j = 0; j < IN_ELEMS_MAX; j++) begin
-                if (j < in_num_elems) begin
-                    int bank_idx;
-                    bank_idx = (BANKS > 1) ? ((q_ptr.wr_bank + j) % BANKS) : 0;
-                    fifo_wr_en[bank_idx]   = 1'b1;
-                    fifo_wr_data[bank_idx] = in_data[j];
-                end
-            end
+        for (int k = 0; k < IN_ELEMS_MAX; k++) begin
+            fifo_wr_en   |= fifo_wr_en_int[k];
+            fifo_wr_data |= fifo_wr_data_int[k];
         end
     end
 
@@ -181,25 +210,39 @@ module vivo_fifo #(
     // Pop datapath: prepare outputs (registered) and drive per-bank reads
     //--------------------------------------------------------------------------
 
-    always_comb begin
-        d_pop = q_pop;
+    // Intermediate unpacked array for output data (Icarus compatibility)
+    logic [OUT_ELEMS_MAX-1:0][ELEM_WIDTH-1:0] d_pop_out_data_int;
 
+    genvar i;
+    generate
+        for (i = 0; i < OUT_ELEMS_MAX; i++) begin : gen_pop_data
+            always_comb begin
+                if (can_pop && (i < out_req_elems)) begin
+                    logic [BANK_W-1:0] bank_idx;
+                    if (BANKS > 1) begin
+                        bank_idx = (q_ptr.rd_bank + BANK_W'(i)) % BANKS;
+                    end else begin
+                        bank_idx = '0;
+                    end
+                    d_pop_out_data_int[i] = fifo_rd_data[bank_idx];
+                end else begin
+                    d_pop_out_data_int[i] = '0;
+                end
+            end
+        end
+    endgenerate
+
+    always_comb begin
         if (do_pop) begin
             // Pop completed: clear valid until next pop becomes ready
             d_pop = '0;
         end else if (can_pop) begin
-            d_pop.out_valid     = 1'b1;
-            d_pop.out_num_elems = out_req_elems;
-
-            for (int i = 0; i < OUT_ELEMS_MAX; i++) begin
-                if (i < out_req_elems) begin
-                    int bank_idx;
-                    bank_idx = (BANKS > 1) ? ((q_ptr.rd_bank + i) % BANKS) : 0;
-                    d_pop.out_data[i] = fifo_rd_data[bank_idx];
-                end else begin
-                    d_pop.out_data[i] = '0;
-                end
-            end
+            // Construct struct with packed array (Icarus compatible)
+            d_pop = '{out_data: d_pop_out_data_int,
+                      out_valid: 1'b1,
+                      out_num_elems: out_req_elems};
+        end else begin
+            d_pop = q_pop;
         end
     end
 
@@ -212,17 +255,32 @@ module vivo_fifo #(
     end
 
     // Generate per-bank read enables when a pop fires
-    always_comb begin
-        fifo_rd_en = '0;
+    // Intermediate signals for read enables (Icarus compatibility)
+    logic [BANKS-1:0] fifo_rd_en_int [0:OUT_ELEMS_MAX-1];
 
-        if (do_pop) begin
-            for (int i = 0; i < OUT_ELEMS_MAX; i++) begin
-                if (i < out_req_elems) begin
-                    int bank_idx;
-                    bank_idx = (BANKS > 1) ? ((q_ptr.rd_bank + i) % BANKS) : 0;
-                    fifo_rd_en[bank_idx] = 1'b1;
+    genvar p;
+    generate
+        for (p = 0; p < OUT_ELEMS_MAX; p++) begin : gen_rd_en
+            always_comb begin
+                fifo_rd_en_int[p] = '0;
+                if (do_pop && (p < out_req_elems)) begin
+                    logic [BANK_W-1:0] bank_idx;
+                    if (BANKS > 1) begin
+                        bank_idx = (q_ptr.rd_bank + BANK_W'(p)) % BANKS;
+                    end else begin
+                        bank_idx = '0;
+                    end
+                    fifo_rd_en_int[p][bank_idx] = 1'b1;
                 end
             end
+        end
+    endgenerate
+
+    // Combine read enables from all elements
+    always_comb begin
+        fifo_rd_en = '0;
+        for (int m = 0; m < OUT_ELEMS_MAX; m++) begin
+            fifo_rd_en |= fifo_rd_en_int[m];
         end
     end
 
